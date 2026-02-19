@@ -1,0 +1,6 @@
+
+# Terraform providers и state
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
