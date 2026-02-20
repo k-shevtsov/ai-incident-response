@@ -5,8 +5,4 @@ image:
 
 config:
   clients:
-    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
-
-  snippets:
-    pipelineStages:
-      - docker: {}
+    - url: http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push

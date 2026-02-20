@@ -1,0 +1,97 @@
+{
+  "dashboard": {
+    "title": "Victim Service - AI Incident Response",
+    "uid": "victim-service",
+    "timezone": "browser",
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Request Rate (req/s)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "datasource": {"type": "prometheus"},
+            "expr": "rate(http_requests_total{job='victim-service'}[1m])",
+            "legendFormat": "{{status}}"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Error Rate %",
+        "type": "gauge",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "options": {
+          "reduceOptions": {"calcs": ["lastNotNull"]},
+          "minVizValue": 0,
+          "maxVizValue": 100
+        },
+        "targets": [
+          {
+            "datasource": {"type": "prometheus"},
+            "expr": "rate(http_requests_total{job='victim-service', status='500'}[1m]) / rate(http_requests_total{job='victim-service'}[1m]) * 100"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 20},
+                {"color": "red", "value": 50}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Response Duration (p95)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "datasource": {"type": "prometheus"},
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job='victim-service'}[1m]))",
+            "legendFormat": "p95"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Chaos Mode Active",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "datasource": {"type": "prometheus"},
+            "expr": "chaos_mode_active"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"type": "value", "options": {"0": {"text": "NORMAL", "color": "green"}, "1": {"text": "CHAOS!", "color": "red"}}}
+            ]
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Application Logs",
+        "type": "logs",
+        "gridPos": {"h": 10, "w": 24, "x": 0, "y": 16},
+        "targets": [
+          {
+            "datasource": {"type": "loki"},
+            "expr": "{namespace='app'} |= ``"
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true,
+  "folderId": 0
+}
