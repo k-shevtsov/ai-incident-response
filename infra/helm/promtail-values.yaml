@@ -1,0 +1,12 @@
+image:
+  registry: docker.io
+  repository: grafana/promtail
+  tag: 3.4.2
+
+config:
+  clients:
+    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+
+  snippets:
+    pipelineStages:
+      - docker: {}

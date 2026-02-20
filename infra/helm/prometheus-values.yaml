@@ -1,0 +1,41 @@
+prometheus:
+  prometheusSpec:
+    image:
+      registry: quay.io
+      repository: prometheus/prometheus
+      tag: v3.4.0
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    additionalScrapeConfigs:
+    - job_name: 'victim-service'
+      static_configs:
+      - targets: ['victim-service.app.svc.cluster.local:80']
+      metrics_path: /metrics
+
+alertmanager:
+  alertmanagerSpec:
+    image:
+      registry: quay.io
+      repository: prometheus/alertmanager
+      tag: v0.28.1
+
+grafana:
+  image:
+    registry: docker.io
+    repository: grafana/grafana
+    tag: 11.6.1
+  adminPassword: admin123
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - grafana.local
+
+nodeExporter:
+  enabled: true
+
+kube-state-metrics:
+  image:
+    registry: registry.k8s.io
+    repository: kube-state-metrics/kube-state-metrics
+    tag: v2.12.0
