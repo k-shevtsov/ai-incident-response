@@ -1,0 +1,61 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: victim-service-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+  - name: victim-service
+    interval: 15s
+    rules:
+
+    - alert: HighErrorRate
+      expr: |
+        rate(http_requests_total{job="victim-service", status="500"}[1m])
+        /
+        rate(http_requests_total{job="victim-service"}[1m]) * 100 > 30
+      for: 30s
+      labels:
+        severity: warning
+        service: victim-service
+      annotations:
+        summary: "High error rate on victim-service"
+        description: "Error rate is {{ $value | printf \"%.1f\" }}% (threshold: 30%)"
+
+    - alert: CriticalErrorRate
+      expr: |
+        rate(http_requests_total{job="victim-service", status="500"}[1m])
+        /
+        rate(http_requests_total{job="victim-service"}[1m]) * 100 > 70
+      for: 15s
+      labels:
+        severity: critical
+        service: victim-service
+      annotations:
+        summary: "CRITICAL error rate on victim-service"
+        description: "Error rate is {{ $value | printf \"%.1f\" }}% (threshold: 70%)"
+
+    - alert: SlowResponseTime
+      expr: |
+        histogram_quantile(0.95,
+          rate(http_request_duration_seconds_bucket{job="victim-service"}[1m])
+        ) > 2
+      for: 30s
+      labels:
+        severity: warning
+        service: victim-service
+      annotations:
+        summary: "Slow response time on victim-service"
+        description: "p95 response time is {{ $value | printf \"%.2f\" }}s (threshold: 2s)"
+
+    - alert: ChaosModeActive
+      expr: chaos_mode_active == 1
+      for: 0s
+      labels:
+        severity: critical
+        service: victim-service
+      annotations:
+        summary: "Chaos mode is ACTIVE"
+        description: "Chaos mode has been enabled on victim-service - expect high error rates"
