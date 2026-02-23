@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read 
+  packages: write
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
@@ -51,8 +55,8 @@ jobs:
         context: ./app
         push: true
         tags: |
-          ghcr.io/${{ github.repository }}/victim-service:latest
-          ghcr.io/${{ github.repository }}/victim-service:${{ github.sha }}
+          ghcr.io/${{ github.actor }}/victim-service:latest
+          ghcr.io/${{ github.actor }}/victim-service:${{ github.sha }}
 
   build-ai-engine:
     needs: lint-and-test
@@ -77,5 +81,5 @@ jobs:
         context: ./ai-engine
         push: true
         tags: |
-          ghcr.io/${{ github.repository }}/ai-engine:latest
-          ghcr.io/${{ github.repository }}/ai-engine:${{ github.sha }}
+          ghcr.io/${{ github.actor }}/ai-engine:latest
+          ghcr.io/${{ github.actor }}/ai-engine:${{ github.sha }}
