@@ -1,64 +1,47 @@
 import os
+import json
 import httpx
 import anthropic
 from fastapi import FastAPI, Request
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-app = FastAPI(title="AI Incident Response Engine")
+app = FastAPI(title="AI Incident Engine")
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-PROMETHEUS_URL = "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
-LOKI_URL = "http://loki-gateway.monitoring.svc.cluster.local"
-
-# Дедупликация — храним время последнего анализа по алерту
-last_analyzed: dict = {}
-COOLDOWN_SECONDS = 300  # 5 минут между анализами одного алерта
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring:9090")
+LOKI_URL = os.getenv("LOKI_URL", "http://loki-gateway.monitoring")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
-async def get_prometheus_metrics(service: str) -> dict:
-    queries = {
-        "error_rate": f'rate(http_requests_total{{job="{service}",status="500"}}[5m]) / rate(http_requests_total{{job="{service}"}}[5m]) * 100',
-        "request_rate": f'rate(http_requests_total{{job="{service}"}}[5m])',
-        "p95_latency": f'histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{{job="{service}"}}[5m]))',
-        "chaos_mode": "chaos_mode_active",
-    }
-    results = {}
+async def get_metrics(job: str = "victim-service") -> dict:
     async with httpx.AsyncClient() as client:
+        queries = {
+            "error_rate": f'rate(http_requests_total{{job="{job}",status="500"}}[2m])/rate(http_requests_total{{job="{job}"}}[2m])*100',
+            "request_rate": f'rate(http_requests_total{{job="{job}"}}[2m])',
+            "p95_latency": f'histogram_quantile(0.95,rate(http_request_duration_seconds_bucket{{job="{job}"}}[2m]))',
+            "chaos_mode": 'chaos_mode_active',
+        }
+        results = {}
         for name, query in queries.items():
             try:
-                r = await client.get(
-                    f"{PROMETHEUS_URL}/api/v1/query",
-                    params={"query": query},
-                    timeout=5
-                )
+                r = await client.get(f"{PROMETHEUS_URL}/api/v1/query", params={"query": query}, timeout=5)
                 data = r.json()
                 if data["data"]["result"]:
-                    results[name] = round(float(data["data"]["result"][0]["value"][1]), 3)
+                    results[name] = float(data["data"]["result"][0]["value"][1])
                 else:
-                    results[name] = "no data"
-            except Exception as e:
-                results[name] = f"error: {e}"
-    return results
+                    results[name] = None
+            except Exception:
+                results[name] = None
+        return results
 
 
-async def get_loki_logs(namespace: str, limit: int = 30) -> str:
-    # Ищем только ошибки и предупреждения
-    query = f'{{namespace="{namespace}"}} |~ "(?i)(error|warn|exception|500|failed)"'
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(minutes=5)
-
+async def get_logs(namespace: str = "app", limit: int = 20) -> str:
     async with httpx.AsyncClient() as client:
         try:
             r = await client.get(
                 f"{LOKI_URL}/loki/api/v1/query_range",
-                params={
-                    "query": query,
-                    "limit": limit,
-                    "start": int(start.timestamp()),
-                    "end": int(now.timestamp()),
-                },
+                params={"query": f'{{namespace="{namespace}"}}', "limit": limit, "direction": "backward"},
                 timeout=5
             )
             data = r.json()
@@ -66,111 +49,89 @@ async def get_loki_logs(namespace: str, limit: int = 30) -> str:
             for stream in data.get("data", {}).get("result", []):
                 for _, line in stream.get("values", []):
                     logs.append(line)
-            if logs:
-                return "\n".join(logs[-20:])
-            # Если ошибок нет — берём последние логи
-            r2 = await client.get(
-                f"{LOKI_URL}/loki/api/v1/query_range",
-                params={
-                    "query": f'{{namespace="{namespace}"}}',
-                    "limit": 10,
-                    "start": int(start.timestamp()),
-                    "end": int(now.timestamp()),
-                },
-                timeout=5
-            )
-            data2 = r2.json()
-            logs2 = []
-            for stream in data2.get("data", {}).get("result", []):
-                for _, line in stream.get("values", []):
-                    logs2.append(line)
-            return "\n".join(logs2[-10:]) if logs2 else "No logs found"
+            return "\n".join(logs[:20]) if logs else "No logs available"
         except Exception as e:
-            return f"Error fetching logs: {e}"
+            return f"Failed to fetch logs: {e}"
 
 
 async def analyze_with_claude(alert_name: str, metrics: dict, logs: str) -> str:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    prompt = f"""You are a DevOps engineer analyzing a Kubernetes incident. Be concise.
+    prompt = f"""You are an expert SRE analyzing a Kubernetes incident.
 
-ALERT: {alert_name}
+Alert: {alert_name}
+Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}
 
-METRICS:
-- Error rate: {metrics.get('error_rate')}%
-- Request rate: {metrics.get('request_rate')} req/s
-- P95 latency: {metrics.get('p95_latency')}s
-- Chaos mode: {metrics.get('chaos_mode')}
+Metrics:
+- Error rate: {metrics.get('error_rate', 'N/A')}%
+- Request rate: {metrics.get('request_rate', 'N/A')} req/s
+- P95 latency: {metrics.get('p95_latency', 'N/A')}s
+- Chaos mode: {metrics.get('chaos_mode', 'N/A')}
 
-RECENT ERROR LOGS:
+Recent logs:
 {logs}
 
-Provide analysis in exactly this format (keep it short):
-**Root cause:** [1 sentence]
-**Impact:** [1 sentence]  
-**Actions:**
-1. [action]
-2. [action]
-3. [action]"""
+Provide a concise incident analysis with:
+1. Root cause (2-3 sentences)
+2. Impact (1-2 sentences)
+3. Actions (3 specific steps)
+
+Be specific and actionable. Format with clear sections."""
 
     message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
+        model="claude-opus-4-6",
+        max_tokens=500,
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
 
 
-async def send_telegram(message: str):
+async def send_telegram(text: str):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
     async with httpx.AsyncClient() as client:
         await client.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=10
         )
 
 
-@app.post("/webhook/alertmanager")
-async def alertmanager_webhook(request: Request):
-    payload = await request.json()
-    alerts = payload.get("alerts", [])
-    processed = 0
+@app.post("/webhook")
+async def handle_webhook(request: Request):
+    body = await request.json()
+    alerts = body.get("alerts", [])
 
     for alert in alerts:
         if alert.get("status") != "firing":
             continue
 
         alert_name = alert["labels"].get("alertname", "Unknown")
-        service = alert["labels"].get("service", "victim-service")
-
-        # Дедупликация
-        now = datetime.now(timezone.utc)
-        last = last_analyzed.get(alert_name)
-        if last and (now - last).seconds < COOLDOWN_SECONDS:
-            continue
-
-        last_analyzed[alert_name] = now
-
-        metrics = await get_prometheus_metrics(service)
-        logs = await get_loki_logs("app")
+        metrics = await get_metrics()
+        logs = await get_logs()
         analysis = await analyze_with_claude(alert_name, metrics, logs)
 
-        message = f"""🤖 *AI Incident Analysis*
-🚨 *Alert:* `{alert_name}`
-⏰ *Time:* {now.strftime('%H:%M UTC')}
+        error_rate = metrics.get('error_rate')
+        request_rate = metrics.get('request_rate')
+        p95 = metrics.get('p95_latency')
+        chaos = metrics.get('chaos_mode')
+
+        message = f"""🚨 *AI Incident Analysis*
+🔔 Alert: `{alert_name}`
+🕐 Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}
 
 📊 *Metrics:*
-- Error rate: `{metrics.get('error_rate')}%`
-- Request rate: `{metrics.get('request_rate')} req/s`
-- P95 latency: `{metrics.get('p95_latency')}s`
-- Chaos mode: `{metrics.get('chaos_mode')}`
+- Error rate: `{f"{error_rate:.1f}%" if error_rate is not None else "N/A"}`
+- Request rate: `{f"{request_rate:.3f} req/s" if request_rate is not None else "N/A"}`
+- P95 latency: `{f"{p95:.3f}s" if p95 is not None else "N/A"}`
+- Chaos mode: `{chaos}`
 
 🧠 *Analysis:*
 {analysis}"""
 
         await send_telegram(message)
-        processed += 1
 
-    return {"status": "processed", "alerts": processed}
+    return {"status": "ok"}
 
 
 @app.get("/health")
