@@ -4,3 +4,4 @@
 *.tfstate
 *.tfstate.backup
 .terraform.lock.hcl
+pet1.txt
