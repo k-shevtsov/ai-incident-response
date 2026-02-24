@@ -3,8 +3,6 @@ kind: Ingress
 metadata:
   name: victim-service
   namespace: app
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   ingressClassName: nginx
   rules:
