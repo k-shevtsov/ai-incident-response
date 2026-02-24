@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: victim-service
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/k-shevtsov/ai-incident-response
+    targetRevision: HEAD
+    path: infra/k8s/base
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ai-engine
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/k-shevtsov/ai-incident-response
+    targetRevision: HEAD
+    path: infra/k8s/ai-engine
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ai-engine
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
