@@ -7,3 +7,5 @@
 pet1.txt
 infra/helm/alertmanager-values.yaml
 PROJECT_STATE.md
+__pycache__/
+*.pyc
