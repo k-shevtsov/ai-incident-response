@@ -69,13 +69,48 @@ def should_analyze(group_key: str) -> bool:
     return elapsed > timedelta(minutes=DEDUP_WINDOW_MINUTES)
 
 
-def pick_primary_alert(alerts: list[Alert]) -> Alert:
+def pick_primary_alert(alerts: list[Alert]) -> Alert | None:
+    if not alerts:
+        return None
     firing = [a for a in alerts if a.status == "firing"]
     if not firing:
-        return alerts[0]
+        return min(alerts, key=lambda a: ALERT_PRIORITY.get(a.labels.alertname, 99))
     primary = min(firing, key=lambda a: ALERT_PRIORITY.get(a.labels.alertname, 99))
     log.info(f"Primary alert selected: {primary.labels.alertname}")
     return primary
+
+
+# --- Message formatting ---
+
+def format_message(
+    alert_names: list[str],
+    primary_name: str,
+    metrics: dict,
+    analysis: str,
+    timestamp: str,
+) -> str:
+    alerts_header = primary_name
+    if len(alert_names) > 1:
+        others = [n for n in alert_names if n != primary_name]
+        alerts_header += f" + {', '.join(others)}"
+
+    error_rate = metrics.get("error_rate")
+    request_rate = metrics.get("request_rate")
+    p95 = metrics.get("p95_latency")
+    chaos = metrics.get("chaos_mode")
+
+    return (
+        f"🚨 <b>AI Incident Analysis</b>\n"
+        f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
+        f"🕐 Time: {timestamp}\n\n"
+        f"📊 <b>Metrics:</b>\n"
+        f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
+        f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
+        f"- P95 latency: {f'{p95:.3f}s' if p95 is not None else 'N/A'}\n"
+        f"- Chaos mode: {chaos}\n\n"
+        f"🧠 <b>Analysis:</b>\n"
+        f"{html.escape(analysis)}"
+    )
 
 
 # --- Data collection with retry ---
@@ -223,34 +258,16 @@ async def handle_webhook(request: Request):
     log.info(f"Dedup updated: {group_key} at {now.isoformat()}")
 
     primary = pick_primary_alert(firing)
+    if not primary:
+        return {"status": "ok", "skipped": "no alerts to process"}
     primary_name = primary.labels.alertname
 
     metrics = await get_metrics()
     logs = await get_logs()
     analysis = await analyze_with_claude(alert_names, metrics, logs)
 
-    error_rate = metrics.get("error_rate")
-    request_rate = metrics.get("request_rate")
-    p95 = metrics.get("p95_latency")
-    chaos = metrics.get("chaos_mode")
-
-    alerts_header = primary_name
-    if len(alert_names) > 1:
-        others = [n for n in alert_names if n != primary_name]
-        alerts_header += f" + {', '.join(others)}"
-
-    message = (
-        f"🚨 <b>AI Incident Analysis</b>\n"
-        f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
-        f"🕐 Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}\n\n"
-        f"📊 <b>Metrics:</b>\n"
-        f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
-        f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
-        f"- P95 latency: {f'{p95:.3f}s' if p95 is not None else 'N/A'}\n"
-        f"- Chaos mode: {chaos}\n\n"
-        f"🧠 <b>Analysis:</b>\n"
-        f"{html.escape(analysis)}"
-    )
+    timestamp = datetime.now(timezone.utc).strftime('%H:%M UTC')
+    message = format_message(alert_names, primary_name, metrics, analysis, timestamp)
 
     await send_telegram(message)
     log.info(f"Analysis sent for group: {group_key}")
