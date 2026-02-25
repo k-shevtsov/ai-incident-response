@@ -3,6 +3,7 @@ import asyncio
 import logging
 import httpx
 import anthropic
+import html
 from fastapi import FastAPI, Request
 from alert_logger import router as alert_logger_router
 from pydantic import BaseModel, ValidationError
@@ -162,7 +163,7 @@ Provide a concise incident analysis:
 2. Impact (1-2 sentences)
 3. Actions (3 specific steps)
 
-Be specific and actionable."""
+Be specific and actionable. Plain text only, no markdown formatting."""
 
         message = client.messages.create(
             model="claude-opus-4-6",
@@ -181,11 +182,13 @@ async def send_telegram(text: str):
         return
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(
+            resp = await client.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
                 timeout=10,
             )
+            if resp.status_code != 200:
+                log.error(f"Telegram error {resp.status_code}: {resp.text}")
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
 
@@ -231,23 +234,23 @@ async def handle_webhook(request: Request):
     p95 = metrics.get("p95_latency")
     chaos = metrics.get("chaos_mode")
 
-    alerts_header = f"`{primary_name}`"
+    alerts_header = primary_name
     if len(alert_names) > 1:
         others = [n for n in alert_names if n != primary_name]
-        alerts_header += f" + {', '.join(f'`{n}`' for n in others)}"
+        alerts_header += f" + {', '.join(others)}"
 
-    message = f"""🚨 *AI Incident Analysis*
-🔔 Alert: {alerts_header}
-🕐 Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}
-
-📊 *Metrics:*
-- Error rate: `{f"{error_rate:.1f}%" if error_rate is not None else "N/A"}`
-- Request rate: `{f"{request_rate:.3f} req/s" if request_rate is not None else "N/A"}`
-- P95 latency: `{f"{p95:.3f}s" if p95 is not None else "N/A"}`
-- Chaos mode: `{chaos}`
-
-🧠 *Analysis:*
-{analysis}"""
+    message = (
+        f"🚨 <b>AI Incident Analysis</b>\n"
+        f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
+        f"🕐 Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}\n\n"
+        f"📊 <b>Metrics:</b>\n"
+        f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
+        f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
+        f"- P95 latency: {f'{p95:.3f}s' if p95 is not None else 'N/A'}\n"
+        f"- Chaos mode: {chaos}\n\n"
+        f"🧠 <b>Analysis:</b>\n"
+        f"{html.escape(analysis)}"
+    )
 
     await send_telegram(message)
     log.info(f"Analysis sent for group: {group_key}")
@@ -257,4 +260,3 @@ async def handle_webhook(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
