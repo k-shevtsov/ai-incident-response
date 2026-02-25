@@ -1,33 +1,48 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
-echo "========================================"
-echo "▶ Stopping k3d cluster: ai-incident"
-echo "========================================"
-k3d cluster stop ai-incident || echo "Cluster already stopped"
-sleep 2
+CLUSTER_NAME="ai-incident"
 
-echo
-echo "========================================"
-echo "▶ Checking cluster status"
-echo "========================================"
+ok()   { echo "✔ $*"; }
+warn() { echo "⚠ $*"; }
+step() { echo; echo "========================================"; echo "▶ $*"; echo "========================================"; }
+
+# ------------------------------------------------
+step "Stopping k3d cluster: ${CLUSTER_NAME}"
+# ------------------------------------------------
+if k3d cluster list | grep -q "${CLUSTER_NAME}"; then
+    k3d cluster stop "${CLUSTER_NAME}"
+    ok "Cluster stopped"
+else
+    warn "Cluster '${CLUSTER_NAME}' not found — already stopped or deleted"
+fi
+
+# ------------------------------------------------
+step "Cluster status"
+# ------------------------------------------------
 k3d cluster list
 
-echo
-echo "========================================"
-echo "▶ Stopping Docker (optional)"
-echo "========================================"
-# Uncomment if you want Docker to stop too:
-# sudo systemctl stop docker
+# ------------------------------------------------
+step "Reminder: secrets are lost on cluster recreate"
+# ------------------------------------------------
+warn "If you recreate the cluster, secrets must be re-created manually:"
+echo "  - ai-engine-secrets (telegram-token, telegram-chat-id, anthropic-api-key)"
+echo "  - alertmanager config secret"
+echo "  See README or PROJECT_STATE.md for commands."
 
-echo
-echo "========================================"
-echo "▶ Checking Docker status"
-echo "========================================"
-sudo systemctl status docker --no-pager || true
+# ------------------------------------------------
+step "Docker"
+# ------------------------------------------------
+echo "Stop Docker too? (y/N)"
+read -r -t 10 ANSWER || ANSWER="n"
+if [[ "${ANSWER,,}" == "y" ]]; then
+    sudo systemctl stop docker
+    ok "Docker stopped"
+else
+    ok "Docker left running"
+fi
 
-echo
-echo "========================================"
-echo "▶ Project stopped"
-echo "========================================"
+# ------------------------------------------------
+step "Project stopped"
+# ------------------------------------------------
