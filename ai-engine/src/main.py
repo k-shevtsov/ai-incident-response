@@ -4,6 +4,7 @@ import logging
 import httpx
 import anthropic
 from fastapi import FastAPI, Request
+from alert_logger import router as alert_logger_router
 from pydantic import BaseModel, ValidationError
 from datetime import datetime, timezone, timedelta
 
@@ -14,6 +15,7 @@ logging.basicConfig(
 log = logging.getLogger("ai-engine")
 
 app = FastAPI(title="AI Incident Engine")
+app.include_router(alert_logger_router)
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring:9090")
 LOKI_URL = os.getenv("LOKI_URL", "http://loki-gateway.monitoring")
@@ -256,7 +258,3 @@ async def handle_webhook(request: Request):
 async def health():
     return {"status": "ok"}
 
-
-# System alerts logger
-from alert_logger import router as alert_logger_router
-app.include_router(alert_logger_router)

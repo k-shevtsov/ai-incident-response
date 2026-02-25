@@ -1,6 +1,5 @@
 import logging
 from fastapi import APIRouter, Request
-from datetime import datetime, timezone
 
 logger = logging.getLogger("alert-logger")
 router = APIRouter()
