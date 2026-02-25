@@ -1,29 +1,18 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
-echo "========================================"
-echo "▶ Restarting project"
-echo "========================================"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Stop
-echo
-echo "▶ Stopping cluster..."
-~/ai-incident-response/scripts/stop-project.sh
+ok()   { echo "✔ $*"; }
+step() { echo; echo "========================================"; echo "▶ $*"; echo "========================================"; }
 
-# Start
-echo
-echo "▶ Starting cluster..."
-~/ai-incident-response/scripts/start-project.sh
+step "Restarting project"
 
-echo
-echo "========================================"
-echo "▶ Final health check"
-echo "========================================"
+step "Stopping cluster"
+bash "${SCRIPT_DIR}/stop-project.sh"
 
-curl -v http://victim.local:8080/health || echo "Health check failed"
+step "Starting cluster"
+bash "${SCRIPT_DIR}/start-project.sh"
 
-echo
-echo "========================================"
-echo "▶ Restart complete"
-echo "========================================"
+step "Restart complete"
