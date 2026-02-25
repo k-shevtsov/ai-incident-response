@@ -114,12 +114,12 @@ class TestPickPrimaryAlert:
         ]
         assert pick_primary_alert(alerts).labels.alertname == "HighErrorRate"
 
-    def test_all_resolved_returns_highest_priority(self):
+    def test_all_resolved_returns_none(self):
         alerts = [
             make_alert("HighErrorRate", status="resolved"),
             make_alert("CriticalErrorRate", status="resolved"),
         ]
-        assert pick_primary_alert(alerts).labels.alertname == "CriticalErrorRate"
+        assert pick_primary_alert(alerts) is None
 
     def test_single_alert_returns_it(self):
         alerts = [make_alert("HighErrorRate")]

@@ -70,14 +70,25 @@ def should_analyze(group_key: str) -> bool:
 
 
 def pick_primary_alert(alerts: list[Alert]) -> Alert | None:
+    """
+    Select the highest‑priority *firing* alert.
+    If no firing alerts exist, return None (ignore resolved-only groups).
+    """
+
     if not alerts:
         return None
+
+    # Filter only firing alerts
     firing = [a for a in alerts if a.status == "firing"]
+
+    # If all alerts are resolved → ignore this group
     if not firing:
-        return min(alerts, key=lambda a: ALERT_PRIORITY.get(a.labels.alertname, 99))
-    primary = min(firing, key=lambda a: ALERT_PRIORITY.get(a.labels.alertname, 99))
-    log.info(f"Primary alert selected: {primary.labels.alertname}")
-    return primary
+        return None
+
+    # Sort firing alerts by priority (lower number = higher priority)
+    firing.sort(key=lambda a: ALERT_PRIORITY.get(a.labels.alertname, 999))
+
+    return firing[0]
 
 
 # --- Message formatting ---
