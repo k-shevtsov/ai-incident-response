@@ -9,3 +9,4 @@ infra/helm/alertmanager-values.yaml
 PROJECT_STATE.md
 __pycache__/
 *.pyc
+PROJECT_STATE.md
