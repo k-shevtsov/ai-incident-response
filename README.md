@@ -266,7 +266,7 @@ curl -X POST http://victim.local:8080/chaos/disable
 cd ai-engine
 pip3 install pytest freezegun httpx fastapi anthropic
 python3 -m pytest tests/ -v
-# 34 passed in 0.72s
+# 53 passed in 0.72s
 ```
 
 Test coverage includes: deduplication logic with frozen time, alert priority selection, Pydantic payload validation, HTML escaping, and full endpoint integration tests with mocked external services.
