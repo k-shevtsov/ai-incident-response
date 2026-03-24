@@ -1,0 +1,159 @@
+{
+  "title": "AI Engine",
+  "uid": "ai-engine-dashboard",
+  "tags": ["ai-engine", "incident-response"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Alerts Received / Hour",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "increase(ai_engine_alerts_received_total[1h])",
+          "legendFormat": "Alerts received"
+        },
+        {
+          "expr": "increase(ai_engine_alerts_analyzed_total[1h])",
+          "legendFormat": "Alerts analyzed (AI)"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Claude Success Rate",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.8 },
+              { "color": "green", "value": 0.95 }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "mappings": []
+        }
+      },
+      "targets": [
+        {
+          "expr": "clamp_min(1 - rate(ai_engine_claude_errors_total[1h]) / clamp_min(rate(ai_engine_alerts_received_total[1h]), 0.0001), 0)",
+          "legendFormat": "Success rate"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Telegram Delivery Rate",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.9 },
+              { "color": "green", "value": 0.99 }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "mappings": []
+        }
+      },
+      "targets": [
+        {
+          "expr": "clamp_min(1 - rate(ai_engine_telegram_errors_total[1h]) / clamp_min(rate(ai_engine_alerts_received_total[1h]), 0.0001), 0)",
+          "legendFormat": "Delivery rate"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Claude Request Latency (p95)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(ai_engine_claude_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95 latency"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(ai_engine_claude_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50 latency"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Error Counters",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "increase(ai_engine_claude_errors_total[5m])",
+          "legendFormat": "Claude errors (5m)"
+        },
+        {
+          "expr": "increase(ai_engine_telegram_errors_total[5m])",
+          "legendFormat": "Telegram errors (5m)"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    }
+  ]
+}

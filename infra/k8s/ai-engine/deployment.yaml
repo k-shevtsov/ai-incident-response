@@ -52,9 +52,12 @@ kind: Service
 metadata:
   name: ai-engine
   namespace: ai-engine
+  labels:
+    app: ai-engine        # ServiceMonitor ищет Service по этому лейблу
 spec:
   selector:
     app: ai-engine
   ports:
-  - port: 80
+  - name: http            # ServiceMonitor обращается к порту по имени
+    port: 80
     targetPort: 8001

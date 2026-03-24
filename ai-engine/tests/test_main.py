@@ -13,11 +13,17 @@ from main import (
     should_analyze,
     pick_primary_alert,
     format_message,
+    format_fallback_message,
     _last_analyzed,
     DEDUP_WINDOW_MINUTES,
+    CLAUDE_RETRY_DELAYS,
     Alert, AlertLabel, AlertAnnotation,
     WebhookPayload,
     app,
+    alerts_received_total,
+    alerts_analyzed_total,
+    claude_errors_total,
+    telegram_errors_total,
 )
 from fastapi.testclient import TestClient
 
@@ -198,6 +204,147 @@ class TestFormatMessage:
         assert "N/A" in msg
 
 
+# --- format_fallback_message tests ---
+
+class TestFormatFallbackMessage:
+    def setup_method(self):
+        self.metrics = {"error_rate": 55.0, "request_rate": 0.5, "p95_latency": 2.1, "chaos_mode": 1.0}
+
+    def test_contains_warning_emoji(self):
+        msg = format_fallback_message(["HighErrorRate"], "HighErrorRate", self.metrics, "12:00 UTC")
+        assert "⚠️" in msg
+
+    def test_contains_raw_metrics_only_text(self):
+        msg = format_fallback_message(["HighErrorRate"], "HighErrorRate", self.metrics, "12:00 UTC")
+        assert "raw metrics only" in msg
+
+    def test_does_not_contain_ai_analysis_header(self):
+        msg = format_fallback_message(["HighErrorRate"], "HighErrorRate", self.metrics, "12:00 UTC")
+        assert "AI Incident Analysis" not in msg
+
+    def test_contains_alert_name(self):
+        msg = format_fallback_message(["CriticalErrorRate"], "CriticalErrorRate", self.metrics, "12:00 UTC")
+        assert "CriticalErrorRate" in msg
+
+    def test_contains_metrics_values(self):
+        msg = format_fallback_message(["HighErrorRate"], "HighErrorRate", self.metrics, "12:00 UTC")
+        assert "55.0%" in msg
+        assert "2.100s" in msg
+
+    def test_multiple_alerts(self):
+        msg = format_fallback_message(
+            ["ChaosModeActive", "HighErrorRate"], "ChaosModeActive", self.metrics, "12:00 UTC"
+        )
+        assert "HighErrorRate" in msg
+
+    def test_none_metrics_shows_na(self):
+        metrics = {"error_rate": None, "request_rate": None, "p95_latency": None, "chaos_mode": None}
+        msg = format_fallback_message(["HighErrorRate"], "HighErrorRate", metrics, "12:00 UTC")
+        assert "N/A" in msg
+
+
+# --- analyze_with_claude retry tests ---
+
+class TestAnalyzeWithClaudeRetry:
+    @pytest.mark.asyncio
+    @patch("main.asyncio.sleep", new_callable=AsyncMock)
+    @patch("main.anthropic.Anthropic")
+    async def test_success_on_first_attempt(self, mock_anthropic_cls, mock_sleep):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_msg = MagicMock()
+        mock_msg.content = [MagicMock(text="Root cause: chaos.")]
+        mock_client.messages.create.return_value = mock_msg
+
+        from main import analyze_with_claude
+        result = await analyze_with_claude(["HighErrorRate"], {}, "logs")
+
+        assert result == "Root cause: chaos."
+        mock_client.messages.create.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("main.asyncio.sleep", new_callable=AsyncMock)
+    @patch("main.anthropic.Anthropic")
+    async def test_retries_on_failure_then_succeeds(self, mock_anthropic_cls, mock_sleep):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_msg = MagicMock()
+        mock_msg.content = [MagicMock(text="Analysis after retry.")]
+        mock_client.messages.create.side_effect = [
+            Exception("timeout"),
+            mock_msg,
+        ]
+
+        from main import analyze_with_claude
+        result = await analyze_with_claude(["HighErrorRate"], {}, "logs")
+
+        assert result == "Analysis after retry."
+        assert mock_client.messages.create.call_count == 2
+        mock_sleep.assert_called_once_with(CLAUDE_RETRY_DELAYS[0])
+
+    @pytest.mark.asyncio
+    @patch("main.asyncio.sleep", new_callable=AsyncMock)
+    @patch("main.anthropic.Anthropic")
+    async def test_returns_none_after_all_retries_exhausted(self, mock_anthropic_cls, mock_sleep):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = Exception("API down")
+
+        from main import analyze_with_claude
+        result = await analyze_with_claude(["HighErrorRate"], {}, "logs")
+
+        assert result is None
+        assert mock_client.messages.create.call_count == len(CLAUDE_RETRY_DELAYS)
+
+    @pytest.mark.asyncio
+    @patch("main.asyncio.sleep", new_callable=AsyncMock)
+    @patch("main.anthropic.Anthropic")
+    async def test_sleep_delays_match_config(self, mock_anthropic_cls, mock_sleep):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = Exception("fail")
+
+        from main import analyze_with_claude
+        await analyze_with_claude(["HighErrorRate"], {}, "logs")
+
+        # Last attempt has no sleep after it — delays between attempts only
+        sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
+        assert sleep_calls == CLAUDE_RETRY_DELAYS[:-1]
+
+    @pytest.mark.asyncio
+    @patch("main.asyncio.sleep", new_callable=AsyncMock)
+    @patch("main.anthropic.Anthropic")
+    async def test_claude_errors_counter_incremented_on_exhaustion(self, mock_anthropic_cls, mock_sleep):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = Exception("fail")
+
+        before = claude_errors_total._value.get()
+        from main import analyze_with_claude
+        await analyze_with_claude(["HighErrorRate"], {}, "logs")
+        after = claude_errors_total._value.get()
+
+        assert after == before + 1
+
+    @pytest.mark.asyncio
+    @patch("main.asyncio.sleep", new_callable=AsyncMock)
+    @patch("main.anthropic.Anthropic")
+    async def test_claude_errors_counter_not_incremented_on_success(self, mock_anthropic_cls, mock_sleep):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_msg = MagicMock()
+        mock_msg.content = [MagicMock(text="ok")]
+        mock_client.messages.create.return_value = mock_msg
+
+        before = claude_errors_total._value.get()
+        from main import analyze_with_claude
+        await analyze_with_claude(["HighErrorRate"], {}, "logs")
+        after = claude_errors_total._value.get()
+
+        assert after == before
+
+
 # --- Endpoint integration tests ---
 
 class TestWebhookEndpoint:
@@ -250,16 +397,69 @@ class TestWebhookEndpoint:
         assert "<b>AI Incident Analysis</b>" in call_args
         assert "<code>" in call_args
 
+    @patch("main.get_metrics", new_callable=AsyncMock, return_value={"error_rate": 100.0, "request_rate": 0.1, "p95_latency": 1.5, "chaos_mode": 1.0})
+    @patch("main.get_logs", new_callable=AsyncMock, return_value="logs")
+    @patch("main.analyze_with_claude", new_callable=AsyncMock, return_value=None)
+    @patch("main.send_telegram", new_callable=AsyncMock)
+    def test_fallback_message_sent_when_claude_unavailable(self, mock_telegram, mock_claude, mock_logs, mock_metrics):
+        """When analyze_with_claude returns None, fallback message is sent instead of AI analysis."""
+        resp = client.post("/webhook", json=SAMPLE_PAYLOAD)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        call_args = mock_telegram.call_args[0][0]
+        assert "raw metrics only" in call_args
+        assert "AI analysis unavailable" in call_args
+
+    @patch("main.get_metrics", new_callable=AsyncMock, return_value={"error_rate": 100.0, "request_rate": 0.1, "p95_latency": 1.5, "chaos_mode": 1.0})
+    @patch("main.get_logs", new_callable=AsyncMock, return_value="logs")
+    @patch("main.analyze_with_claude", new_callable=AsyncMock, return_value=None)
+    @patch("main.send_telegram", new_callable=AsyncMock)
+    def test_fallback_message_does_not_contain_ai_analysis_header(self, mock_telegram, mock_claude, mock_logs, mock_metrics):
+        client.post("/webhook", json=SAMPLE_PAYLOAD)
+        call_args = mock_telegram.call_args[0][0]
+        assert "AI Incident Analysis" not in call_args
+
+    @patch("main.get_metrics", new_callable=AsyncMock, return_value={"error_rate": 100.0, "request_rate": 0.1, "p95_latency": 1.5, "chaos_mode": 1.0})
+    @patch("main.get_logs", new_callable=AsyncMock, return_value="logs")
+    @patch("main.analyze_with_claude", new_callable=AsyncMock, return_value=None)
+    @patch("main.send_telegram", new_callable=AsyncMock)
+    def test_alerts_analyzed_counter_not_incremented_on_fallback(self, mock_telegram, mock_claude, mock_logs, mock_metrics):
+        before = alerts_analyzed_total._value.get()
+        client.post("/webhook", json=SAMPLE_PAYLOAD)
+        after = alerts_analyzed_total._value.get()
+        assert after == before
+
+    @patch("main.get_metrics", new_callable=AsyncMock, return_value={"error_rate": 100.0, "request_rate": 0.1, "p95_latency": 1.5, "chaos_mode": 1.0})
+    @patch("main.get_logs", new_callable=AsyncMock, return_value="logs")
+    @patch("main.analyze_with_claude", new_callable=AsyncMock, return_value="analysis ok")
+    @patch("main.send_telegram", new_callable=AsyncMock)
+    def test_alerts_analyzed_counter_incremented_on_success(self, mock_telegram, mock_claude, mock_logs, mock_metrics):
+        before = alerts_analyzed_total._value.get()
+        client.post("/webhook", json=SAMPLE_PAYLOAD)
+        after = alerts_analyzed_total._value.get()
+        assert after == before + 1
+
+    def test_metrics_endpoint_returns_200(self):
+        resp = client.get("/metrics")
+        assert resp.status_code == 200
+
+    def test_metrics_endpoint_contains_custom_metrics(self):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "ai_engine_alerts_received_total" in body
+        assert "ai_engine_alerts_analyzed_total" in body
+        assert "ai_engine_claude_errors_total" in body
+        assert "ai_engine_telegram_errors_total" in body
+        assert "ai_engine_claude_request_duration_seconds" in body
+
 
 # --- Additional tests from review ---
 
 class TestPickPrimaryAlertAdditional:
     def test_no_alerts_returns_none(self):
-        """Явно фиксируем: пустой список → None"""
         assert pick_primary_alert([]) is None
 
     def test_firing_wins_over_resolved_regardless_of_priority(self):
-        """HighErrorRate firing должен выиграть у CriticalErrorRate resolved"""
         alerts = [
             make_alert("CriticalErrorRate", status="resolved"),
             make_alert("HighErrorRate", status="firing"),
@@ -276,7 +476,6 @@ class TestWebhookDedupBehavior:
     @patch("main.analyze_with_claude", new_callable=AsyncMock, return_value="analysis")
     @patch("main.send_telegram", new_callable=AsyncMock)
     def test_last_analyzed_updated_after_processing(self, mock_tg, mock_claude, mock_logs, mock_metrics):
-        """После успешного вызова _last_analyzed должен содержать ключ группы"""
         client.post("/webhook", json=SAMPLE_PAYLOAD)
         key = "victim-service:HighErrorRate"
         assert key in _last_analyzed
@@ -287,7 +486,6 @@ class TestWebhookDedupBehavior:
     @patch("main.analyze_with_claude", new_callable=AsyncMock, return_value="analysis")
     @patch("main.send_telegram", new_callable=AsyncMock)
     def test_second_call_within_window_is_deduplicated(self, mock_tg, mock_claude, mock_logs, mock_metrics):
-        """Два вызова подряд — Claude и Telegram должны вызваться только один раз"""
         client.post("/webhook", json=SAMPLE_PAYLOAD)
         client.post("/webhook", json=SAMPLE_PAYLOAD)
         mock_claude.assert_called_once()
@@ -298,7 +496,6 @@ class TestWebhookDedupBehavior:
     @patch("main.analyze_with_claude", new_callable=AsyncMock, return_value="analysis")
     @patch("main.send_telegram", new_callable=AsyncMock)
     def test_second_call_returns_deduplicated_status(self, mock_tg, mock_claude, mock_logs, mock_metrics):
-        """Второй вызов явно возвращает skipped с причиной"""
         client.post("/webhook", json=SAMPLE_PAYLOAD)
         resp = client.post("/webhook", json=SAMPLE_PAYLOAD)
         assert "deduplicated" in resp.json()["skipped"]

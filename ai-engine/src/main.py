@@ -4,10 +4,12 @@ import logging
 import httpx
 import anthropic
 import html
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from alert_logger import router as alert_logger_router
 from pydantic import BaseModel, ValidationError
 from datetime import datetime, timezone, timedelta
+from prometheus_client import Counter, Histogram, make_asgi_app, REGISTRY
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,6 +19,36 @@ log = logging.getLogger("ai-engine")
 
 app = FastAPI(title="AI Incident Engine")
 app.include_router(alert_logger_router)
+
+# --- Prometheus metrics ---
+
+alerts_received_total = Counter(
+    "ai_engine_alerts_received_total",
+    "Total number of alert groups received via webhook",
+)
+alerts_analyzed_total = Counter(
+    "ai_engine_alerts_analyzed_total",
+    "Total number of alert groups successfully analyzed",
+)
+claude_errors_total = Counter(
+    "ai_engine_claude_errors_total",
+    "Total number of Claude API errors (all retries exhausted)",
+)
+telegram_errors_total = Counter(
+    "ai_engine_telegram_errors_total",
+    "Total number of Telegram delivery failures",
+)
+claude_request_duration_seconds = Histogram(
+    "ai_engine_claude_request_duration_seconds",
+    "Duration of successful Claude API requests",
+    buckets=[0.5, 1, 2, 5, 10, 30],
+)
+
+# Mount /metrics endpoint
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
+
+# --- Config ---
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring:9090")
 LOKI_URL = os.getenv("LOKI_URL", "http://loki-gateway.monitoring")
@@ -28,6 +60,8 @@ _last_analyzed: dict[str, datetime] = {}
 DEDUP_WINDOW_MINUTES = 5
 MAX_LOG_LINES = 30
 MAX_LOG_CHARS = 3000
+
+CLAUDE_RETRY_DELAYS = [1, 2, 4]  # seconds between attempts
 
 ALERT_PRIORITY = {
     "ChaosModeActive": 1,
@@ -74,20 +108,15 @@ def pick_primary_alert(alerts: list[Alert]) -> Alert | None:
     Select the highest‑priority *firing* alert.
     If no firing alerts exist, return None (ignore resolved-only groups).
     """
-
     if not alerts:
         return None
 
-    # Filter only firing alerts
     firing = [a for a in alerts if a.status == "firing"]
 
-    # If all alerts are resolved → ignore this group
     if not firing:
         return None
 
-    # Sort firing alerts by priority (lower number = higher priority)
     firing.sort(key=lambda a: ALERT_PRIORITY.get(a.labels.alertname, 999))
-
     return firing[0]
 
 
@@ -121,6 +150,37 @@ def format_message(
         f"- Chaos mode: {chaos}\n\n"
         f"🧠 <b>Analysis:</b>\n"
         f"{html.escape(analysis)}"
+    )
+
+
+def format_fallback_message(
+    alert_names: list[str],
+    primary_name: str,
+    metrics: dict,
+    timestamp: str,
+) -> str:
+    """Fallback message when Claude is unavailable — raw metrics only."""
+    alerts_header = primary_name
+    if len(alert_names) > 1:
+        others = [n for n in alert_names if n != primary_name]
+        alerts_header += f" + {', '.join(others)}"
+
+    error_rate = metrics.get("error_rate")
+    request_rate = metrics.get("request_rate")
+    p95 = metrics.get("p95_latency")
+    chaos = metrics.get("chaos_mode")
+
+    return (
+        f"⚠️ <b>Incident Alert</b>\n"
+        f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
+        f"🕐 Time: {timestamp}\n\n"
+        f"📊 <b>Metrics:</b>\n"
+        f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
+        f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
+        f"- P95 latency: {f'{p95:.3f}s' if p95 is not None else 'N/A'}\n"
+        f"- Chaos mode: {chaos}\n\n"
+        f"🧠 <b>Analysis:</b>\n"
+        f"⚠️ AI analysis unavailable — showing raw metrics only"
     )
 
 
@@ -182,15 +242,18 @@ async def get_logs(namespace: str = "app") -> str:
             return "Failed to parse logs"
 
 
-async def analyze_with_claude(alert_names: list[str], metrics: dict, logs: str) -> str:
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        error_rate = metrics.get("error_rate")
-        request_rate = metrics.get("request_rate")
-        p95 = metrics.get("p95_latency")
-        chaos = metrics.get("chaos_mode")
+async def analyze_with_claude(alert_names: list[str], metrics: dict, logs: str) -> str | None:
+    """
+    Call Claude API with exponential backoff retry.
+    Returns analysis text on success, None if all attempts fail.
+    Delays: 1s, 2s, 4s between attempts (3 total).
+    """
+    error_rate = metrics.get("error_rate")
+    request_rate = metrics.get("request_rate")
+    p95 = metrics.get("p95_latency")
+    chaos = metrics.get("chaos_mode")
 
-        prompt = f"""You are an expert SRE analyzing a Kubernetes incident.
+    prompt = f"""You are an expert SRE analyzing a Kubernetes incident.
 
 Firing alerts: {", ".join(alert_names)}
 Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}
@@ -211,15 +274,30 @@ Provide a concise incident analysis:
 
 Be specific and actionable. Plain text only, no markdown formatting."""
 
-        message = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text
-    except Exception as e:
-        log.error(f"Claude API error: {e}")
-        return f"AI analysis unavailable: {e}"
+    last_error = None
+    for attempt, delay in enumerate(CLAUDE_RETRY_DELAYS, start=1):
+        try:
+            log.info(f"Claude API attempt {attempt}/{len(CLAUDE_RETRY_DELAYS)}")
+            claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            start = time.monotonic()
+            message = claude_client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            duration = time.monotonic() - start
+            claude_request_duration_seconds.observe(duration)
+            log.info(f"Claude responded in {duration:.2f}s")
+            return message.content[0].text
+        except Exception as e:
+            last_error = e
+            log.warning(f"Claude API attempt {attempt} failed: {e}")
+            if attempt < len(CLAUDE_RETRY_DELAYS):
+                await asyncio.sleep(delay)
+
+    log.error(f"Claude API unavailable after {len(CLAUDE_RETRY_DELAYS)} attempts: {last_error}")
+    claude_errors_total.inc()
+    return None
 
 
 async def send_telegram(text: str):
@@ -235,8 +313,10 @@ async def send_telegram(text: str):
             )
             if resp.status_code != 200:
                 log.error(f"Telegram error {resp.status_code}: {resp.text}")
+                telegram_errors_total.inc()
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
+        telegram_errors_total.inc()
 
 
 @app.post("/webhook")
@@ -254,6 +334,8 @@ async def handle_webhook(request: Request):
     firing = [a for a in payload.alerts if a.status == "firing"]
     if not firing:
         return {"status": "ok", "skipped": "no firing alerts"}
+
+    alerts_received_total.inc()
 
     service = firing[0].labels.service
     alert_names = sorted({a.labels.alertname for a in firing})
@@ -275,13 +357,18 @@ async def handle_webhook(request: Request):
 
     metrics = await get_metrics()
     logs = await get_logs()
+    timestamp = datetime.now(timezone.utc).strftime('%H:%M UTC')
+
     analysis = await analyze_with_claude(alert_names, metrics, logs)
 
-    timestamp = datetime.now(timezone.utc).strftime('%H:%M UTC')
-    message = format_message(alert_names, primary_name, metrics, analysis, timestamp)
+    if analysis is not None:
+        alerts_analyzed_total.inc()
+        message = format_message(alert_names, primary_name, metrics, analysis, timestamp)
+    else:
+        message = format_fallback_message(alert_names, primary_name, metrics, timestamp)
 
     await send_telegram(message)
-    log.info(f"Analysis sent for group: {group_key}")
+    log.info(f"Message sent for group: {group_key}, ai_used={analysis is not None}")
     return {"status": "ok", "analyzed": group_key}
 
 
