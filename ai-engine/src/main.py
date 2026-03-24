@@ -4,11 +4,11 @@ import logging
 import httpx
 import anthropic
 import html
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from alert_logger import router as alert_logger_router
 from pydantic import BaseModel, ValidationError
 from datetime import datetime, timezone, timedelta
-from prometheus_client import Counter, Histogram, make_asgi_app, REGISTRY
+from prometheus_client import Counter, Histogram, make_asgi_app
 import time
 
 logging.basicConfig(
