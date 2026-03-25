@@ -27,6 +27,12 @@ class _JsonFormatter(logging.Formatter):
 _handler = logging.StreamHandler()
 _handler.setFormatter(_JsonFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[_handler])
+
+# Apply JSON formatter to uvicorn loggers
+for _uvicorn_logger in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+    _uv = logging.getLogger(_uvicorn_logger)
+    _uv.handlers = [_handler]
+    _uv.propagate = False
 log = logging.getLogger("ai-engine")
 
 app = FastAPI(title="AI Incident Engine")
