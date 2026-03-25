@@ -8,8 +8,10 @@ from fastapi import FastAPI, Request
 from alert_logger import router as alert_logger_router
 from pydantic import BaseModel, ValidationError
 from datetime import datetime, timezone, timedelta
+from collections import deque
 from prometheus_client import Counter, Histogram, make_asgi_app
 import time
+from remediation import should_remediate, remediate, ALERT_REMEDIATION_MAP
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +40,11 @@ telegram_errors_total = Counter(
     "ai_engine_telegram_errors_total",
     "Total number of Telegram delivery failures",
 )
+remediations_total = Counter(
+    "ai_engine_remediations_total",
+    "Total number of remediation actions taken",
+    ["action", "status"],
+)
 claude_request_duration_seconds = Histogram(
     "ai_engine_claude_request_duration_seconds",
     "Duration of successful Claude API requests",
@@ -57,7 +64,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 _last_analyzed: dict[str, datetime] = {}
-DEDUP_WINDOW_MINUTES = 5
+MAX_CLAUDE_CALLS_PER_HOUR = int(os.getenv("MAX_CLAUDE_CALLS_PER_HOUR", "10"))
+_claude_call_times: deque = deque()
+DEDUP_WINDOW_MINUTES = 30
 MAX_LOG_LINES = 30
 MAX_LOG_CHARS = 3000
 
@@ -248,6 +257,13 @@ async def analyze_with_claude(alert_names: list[str], metrics: dict, logs: str) 
     Returns analysis text on success, None if all attempts fail.
     Delays: 1s, 2s, 4s between attempts (3 total).
     """
+    now = datetime.now(timezone.utc)
+    while _claude_call_times and now - _claude_call_times[0] > timedelta(hours=1):
+        _claude_call_times.popleft()
+    if len(_claude_call_times) >= MAX_CLAUDE_CALLS_PER_HOUR:
+        log.warning("Claude rate limit reached (%d calls/hour), skipping", MAX_CLAUDE_CALLS_PER_HOUR)
+        return None
+    _claude_call_times.append(now)
     error_rate = metrics.get("error_rate")
     request_rate = metrics.get("request_rate")
     p95 = metrics.get("p95_latency")
@@ -369,6 +385,20 @@ async def handle_webhook(request: Request):
 
     await send_telegram(message)
     log.info(f"Message sent for group: {group_key}, ai_used={analysis is not None}")
+
+    # --- Remediation ---
+    if primary_name in ALERT_REMEDIATION_MAP and should_remediate(primary_name):
+        result = remediate(primary_name)
+        remediations_total.labels(action=result["action"], status=result["status"]).inc()
+        log.info(f"Remediation result: {result}")
+        if result["status"] == "success":
+            await send_telegram(
+                f"🔧 <b>Auto-remediation</b>\n"
+                f"Action: rollout restart\n"
+                f"Target: <code>{html.escape(result['detail'])}</code>\n"
+                f"Triggered by: {html.escape(primary_name)}"
+            )
+
     return {"status": "ok", "analyzed": group_key}
 
 

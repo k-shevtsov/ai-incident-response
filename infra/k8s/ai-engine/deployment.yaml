@@ -13,39 +13,44 @@ spec:
       labels:
         app: ai-engine
     spec:
+      serviceAccountName: ai-engine
       containers:
-      - name: ai-engine
-        image: ai-engine:local
-        imagePullPolicy: Never
-        ports:
-        - containerPort: 8001
-        env:
-        - name: PROMETHEUS_URL
-          value: "http://kube-prometheus-stack-prometheus.monitoring:9090"
-        - name: LOKI_URL
-          value: "http://loki-gateway.monitoring"
-        - name: TELEGRAM_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: ai-engine-secrets
-              key: telegram-token
-        - name: TELEGRAM_CHAT_ID
-          valueFrom:
-            secretKeyRef:
-              name: ai-engine-secrets
-              key: telegram-chat-id
-        - name: ANTHROPIC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: ai-engine-secrets
-              key: anthropic-api-key
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "500m"
+        - name: ai-engine
+          image: ai-engine:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8001
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://kube-prometheus-stack-prometheus.monitoring:9090"
+            - name: LOKI_URL
+              value: "http://loki-gateway.monitoring"
+            - name: TELEGRAM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: telegram-token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: telegram-chat-id
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: anthropic-api-key
+            - name: REMEDIATION_ENABLED
+              value: "false"
+            - name: MAX_CLAUDE_CALLS_PER_HOUR
+              value: "10"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
 ---
 apiVersion: v1
 kind: Service
@@ -53,11 +58,11 @@ metadata:
   name: ai-engine
   namespace: ai-engine
   labels:
-    app: ai-engine        # ServiceMonitor ищет Service по этому лейблу
+    app: ai-engine
 spec:
   selector:
     app: ai-engine
   ports:
-  - name: http            # ServiceMonitor обращается к порту по имени
-    port: 80
-    targetPort: 8001
+    - name: http
+      port: 80
+      targetPort: 8001
