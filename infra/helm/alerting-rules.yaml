@@ -63,3 +63,37 @@ spec:
       annotations:
         summary: "Chaos mode is ACTIVE"
         description: "Chaos mode has been enabled on victim-service"
+  - name: ai-engine
+    interval: 30s
+    rules:
+    - alert: AIEngineDown
+      expr: up{job="ai-engine"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        service: ai-engine
+      annotations:
+        summary: "AI Engine is down"
+        description: "ai-engine pod is not reachable by Prometheus"
+    - alert: AIEngineClaudeHighLatency
+      expr: |
+        histogram_quantile(0.95,
+          rate(ai_engine_claude_request_duration_seconds_bucket[5m])
+        ) > 10
+      for: 2m
+      labels:
+        severity: warning
+        service: ai-engine
+      annotations:
+        summary: "Claude API p95 latency > 10s"
+        description: "Claude p95 latency is {{ $value | printf \"%.1f\" }}s (threshold: 10s)"
+    - alert: AIEngineHighRemediationFailures
+      expr: |
+        rate(ai_engine_remediations_total{status="failed"}[5m]) > 0
+      for: 1m
+      labels:
+        severity: warning
+        service: ai-engine
+      annotations:
+        summary: "AI Engine remediation failures detected"
+        description: "Remediation actions are failing"

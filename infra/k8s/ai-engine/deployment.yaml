@@ -44,6 +44,20 @@ spec:
               value: "false"
             - name: MAX_CLAUDE_CALLS_PER_HOUR
               value: "10"
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
               memory: "128Mi"

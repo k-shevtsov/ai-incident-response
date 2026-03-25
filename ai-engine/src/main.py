@@ -5,18 +5,28 @@ import httpx
 import anthropic
 import html
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from alert_logger import router as alert_logger_router
 from pydantic import BaseModel, ValidationError
 from datetime import datetime, timezone, timedelta
 from collections import deque
 from prometheus_client import Counter, Histogram, make_asgi_app
 import time
+import json
 from remediation import should_remediate, remediate, ALERT_REMEDIATION_MAP
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps({
+            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        })
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 log = logging.getLogger("ai-engine")
 
 app = FastAPI(title="AI Incident Engine")
@@ -405,3 +415,22 @@ async def handle_webhook(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/health/live")
+async def liveness():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def readiness():
+    checks = {
+        "telegram_token": bool(TELEGRAM_TOKEN),
+        "anthropic_key": bool(ANTHROPIC_API_KEY),
+    }
+    ready = all(checks.values())
+    status_code = 200 if ready else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": "ready" if ready else "not ready", "checks": checks},
+    )

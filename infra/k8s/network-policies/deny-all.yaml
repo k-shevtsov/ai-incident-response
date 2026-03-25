@@ -1,0 +1,21 @@
+# Default deny all ingress traffic in namespace app
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: app
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Default deny all ingress traffic in namespace ai-engine
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: ai-engine
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
