@@ -1,0 +1,83 @@
+# Default values for ai-engine Helm chart.
+# Override in a values override file or via --set flags.
+
+# -- Number of replicas
+replicaCount: 1
+
+image:
+  # -- Container image repository
+  repository: ai-engine
+  # -- Image tag. Defaults to Chart appVersion if not set.
+  tag: "local"
+  # -- Image pull policy.
+  # "Never" for k3d/kind local imports, "IfNotPresent" for registry images.
+  pullPolicy: Never
+
+# -- Container port the application listens on
+containerPort: 8001
+
+service:
+  # -- Kubernetes Service type
+  type: ClusterIP
+  # -- Service port (external)
+  port: 80
+
+# -- Horizontal Pod Autoscaler (disabled by default)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "100m"
+
+# -- Liveness probe configuration
+livenessProbe:
+  path: /health/live
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  failureThreshold: 3
+  timeoutSeconds: 5
+  successThreshold: 1
+
+# -- Readiness probe configuration
+readinessProbe:
+  path: /health/ready
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 5
+  successThreshold: 1
+
+rbac:
+  # -- Create ServiceAccount, Role and RoleBinding
+  create: true
+  # -- Namespace where the target deployment runs.
+  # Defaults to Release.Namespace if empty.
+  targetNamespace: ""
+  # -- Deployment name the ServiceAccount is allowed to patch
+  targetDeployment: victim-service
+
+# -- Name of the Secret containing credentials.
+# Must be created manually before installing the chart (not managed by Helm).
+# Required keys: telegram-token, telegram-chat-id, anthropic-api-key, github-token
+secretName: ai-engine-secrets
+
+config:
+  # -- Prometheus URL (in-cluster)
+  prometheusUrl: "http://kube-prometheus-stack-prometheus.monitoring:9090"
+  # -- Loki gateway URL (in-cluster)
+  lokiUrl: "http://loki-gateway.monitoring"
+  # -- GitHub repository in "owner/repo" format
+  githubRepo: "k-shevtsov/ai-incident-response"
+  # -- Enable live Kubernetes remediation.
+  # false = dry-run mode (safe default), true = live rollout restarts.
+  remediationEnabled: false
+  # -- Maximum Claude API calls per hour (rate limiting)
+  maxClaudeCallsPerHour: 10

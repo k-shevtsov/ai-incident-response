@@ -1,0 +1,54 @@
+AI Engine has been deployed successfully.
+
+Release:   {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Version:   {{ .Chart.AppVersion }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Prerequisites check
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ⚠  Secret "{{ .Values.secretName }}" must exist before installation.
+  Required keys: telegram-token, telegram-chat-id, anthropic-api-key, github-token
+
+  kubectl get secret {{ .Values.secretName }} -n {{ .Release.Namespace }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Health endpoints
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    svc/{{ include "ai-engine.fullname" . }} 9099:{{ .Values.service.port }}
+
+  curl http://localhost:9099/health/live
+  curl http://localhost:9099/health/ready
+  curl http://localhost:9099/metrics/
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Remediation status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  REMEDIATION_ENABLED={{ .Values.config.remediationEnabled }}
+
+{{- if not .Values.config.remediationEnabled }}
+
+  Dry-run mode active. To enable live remediation:
+
+  helm upgrade {{ .Release.Name }} ./infra/helm/ai-engine \
+    --reuse-values \
+    --set config.remediationEnabled=true \
+    -n {{ .Release.Namespace }}
+{{- else }}
+
+  ✅ Live remediation active.
+  Target: {{ .Values.rbac.targetNamespace | default .Release.Namespace }}/{{ .Values.rbac.targetDeployment }}
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Verify RBAC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  kubectl auth can-i patch deployments \
+    --namespace={{ .Values.rbac.targetNamespace | default .Release.Namespace }} \
+    --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "ai-engine.fullname" . }}
+  # Expected: yes

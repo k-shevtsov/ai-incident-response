@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-engine.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-engine.labels" . | nindent 4 }}
+data:
+  PROMETHEUS_URL: {{ .Values.config.prometheusUrl | quote }}
+  LOKI_URL: {{ .Values.config.lokiUrl | quote }}
+  GITHUB_REPO: {{ .Values.config.githubRepo | quote }}
+  REMEDIATION_ENABLED: {{ .Values.config.remediationEnabled | toString | quote }}
+  MAX_CLAUDE_CALLS_PER_HOUR: {{ .Values.config.maxClaudeCallsPerHour | toString | quote }}

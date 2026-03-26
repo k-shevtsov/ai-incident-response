@@ -1,0 +1,23 @@
+apiVersion: v2
+name: ai-engine
+description: AI-powered incident response engine with Claude analysis, autonomous remediation, and GitHub Issues integration
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+home: https://github.com/k-shevtsov/ai-incident-response
+
+sources:
+  - https://github.com/k-shevtsov/ai-incident-response
+
+icon: https://raw.githubusercontent.com/k-shevtsov/ai-incident-response/main/docs/icon.png
+
+keywords:
+  - sre
+  - incident-response
+  - ai
+  - kubernetes
+
+maintainers:
+  - name: Kostiantyn Shevtsov
+    url: https://github.com/k-shevtsov

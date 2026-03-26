@@ -1,0 +1,39 @@
+{{- if .Values.rbac.create }}
+{{- $targetNs := .Values.rbac.targetNamespace | default .Release.Namespace }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "ai-engine.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-engine.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ai-engine.fullname" . }}-remediation
+  namespace: {{ $targetNs }}
+  labels:
+    {{- include "ai-engine.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+    resourceNames: ["{{ .Values.rbac.targetDeployment }}"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ai-engine.fullname" . }}-remediation
+  namespace: {{ $targetNs }}
+  labels:
+    {{- include "ai-engine.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ai-engine.fullname" . }}-remediation
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ai-engine.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
