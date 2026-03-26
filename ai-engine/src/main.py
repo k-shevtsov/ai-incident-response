@@ -166,17 +166,21 @@ def format_message(
     if issue_number:
         issue_line = f"📋 Issue: <a href=\"https://github.com/{os.getenv('GITHUB_REPO', '')}/issues/{issue_number}\"># {issue_number}</a>\n"
 
+    error_rate_str = f"{error_rate:.1f}%" if error_rate is not None else "N/A"
+    request_rate_str = f"{request_rate:.3f} req/s" if request_rate is not None else "N/A"
+    p95_str = f"{p95:.3f}s" if p95 is not None else "N/A"
+
     return (
-        f"🚨 <b>AI Incident Analysis</b>\n"
+        "🚨 <b>AI Incident Analysis</b>\n"
         f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
         f"🕐 Time: {timestamp}\n"
         f"{issue_line}\n"
-        f"📊 <b>Metrics:</b>\n"
-        f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
-        f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
-        f"- P95 latency: {f'{p95:.3f}s' if p95 is not None else 'N/A'}\n"
+        "📊 <b>Metrics:</b>\n"
+        f"- Error rate: {error_rate_str}\n"
+        f"- Request rate: {request_rate_str}\n"
+        f"- P95 latency: {p95_str}\n"
         f"- Chaos mode: {chaos}\n\n"
-        f"🧠 <b>Analysis:</b>\n"
+        "🧠 <b>Analysis:</b>\n"
         f"{html.escape(analysis)}"
     )
 
@@ -202,18 +206,22 @@ def format_fallback_message(
     if issue_number:
         issue_line = f"📋 Issue: <a href=\"https://github.com/{os.getenv('GITHUB_REPO', '')}/issues/{issue_number}\"># {issue_number}</a>\n"
 
+    error_rate_str = f"{error_rate:.1f}%" if error_rate is not None else "N/A"
+    request_rate_str = f"{request_rate:.3f} req/s" if request_rate is not None else "N/A"
+    p95_str = f"{p95:.3f}s" if p95 is not None else "N/A"
+
     return (
-        f"⚠️ <b>Incident Alert</b>\n"
+        "⚠️ <b>Incident Alert</b>\n"
         f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
         f"🕐 Time: {timestamp}\n"
         f"{issue_line}\n"
-        f"📊 <b>Metrics:</b>\n"
-        f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
-        f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
-        f"- P95 latency: {f'{p95:.3f}s' if p95 is not None else 'N/A'}\n"
+        "📊 <b>Metrics:</b>\n"
+        f"- Error rate: {error_rate_str}\n"
+        f"- Request rate: {request_rate_str}\n"
+        f"- P95 latency: {p95_str}\n"
         f"- Chaos mode: {chaos}\n\n"
-        f"🧠 <b>Analysis:</b>\n"
-        f"⚠️ AI analysis unavailable — showing raw metrics only"
+        "🧠 <b>Analysis:</b>\n"
+        "⚠️ AI analysis unavailable — showing raw metrics only"
     )
 
 
@@ -373,14 +381,14 @@ async def handle_webhook(request: Request):
 
     # --- Handle resolved alerts: close open Issues ---
     if resolved and not firing:
-        resolved_names = sorted({a.labels.alertname for a in resolved})
+        primary_resolved = sorted({a.labels.alertname for a in resolved})[0]
         service = resolved[0].labels.service
-        group_key = f"{service}:{':'.join(resolved_names)}"
+        issue_key = f"{service}:{primary_resolved}"
         resolved_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        closed = await close_issue(group_key, resolved_at)
+        closed = await close_issue(issue_key, resolved_at)
         if closed:
             github_issues_total.labels(operation="close", status="success").inc()
-            log.info("Closed GitHub Issue for resolved group: %s", group_key)
+            log.info("Closed GitHub Issue for %s", issue_key)
         return {"status": "ok", "skipped": "resolved alerts processed"}
 
     if not firing:
@@ -415,7 +423,9 @@ async def handle_webhook(request: Request):
         alerts_analyzed_total.inc()
 
     # --- Create GitHub Issue ---
+    issue_key = f"{service}:{primary_name}"
     issue_number = await create_issue(
+        issue_key=issue_key,
         group_key=group_key,
         alert_names=alert_names,
         primary_name=primary_name,
@@ -427,7 +437,7 @@ async def handle_webhook(request: Request):
     )
     if issue_number:
         github_issues_total.labels(operation="create", status="success").inc()
-        log.info("GitHub Issue #%d created for group %s", issue_number, group_key)
+        log.info("GitHub Issue #%d created for %s (group %s)", issue_number, issue_key, group_key)
     else:
         github_issues_total.labels(operation="create", status="failed").inc()
 
@@ -448,8 +458,8 @@ async def handle_webhook(request: Request):
         log.info(f"Remediation result: {remediation_result}")
         if remediation_result["status"] == "success":
             await send_telegram(
-                f"🔧 <b>Auto-remediation</b>\n"
-                f"Action: rollout restart\n"
+                "🔧 <b>Auto-remediation</b>\n"
+                "Action: rollout restart\n"
                 f"Target: <code>{html.escape(remediation_result['detail'])}</code>\n"
                 f"Triggered by: {html.escape(primary_name)}"
             )

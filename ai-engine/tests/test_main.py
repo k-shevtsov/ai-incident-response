@@ -360,6 +360,12 @@ class TestWebhookEndpoint:
         payload = {"alerts": [{"status": "resolved", "labels": {"alertname": "HighErrorRate", "service": "victim-service"}}]}
         resp = client.post("/webhook", json=payload)
         assert resp.status_code == 200
+        assert resp.json()["skipped"] == "resolved alerts processed"
+        
+    def test_empty_alerts_skipped(self):
+        payload = {"alerts": []}
+        resp = client.post("/webhook", json=payload)
+        assert resp.status_code == 200
         assert resp.json()["skipped"] == "no firing alerts"
 
     def test_invalid_payload_returns_error(self):

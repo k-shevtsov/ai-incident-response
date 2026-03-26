@@ -30,6 +30,7 @@ SAMPLE_METRICS = {
 }
 
 DEFAULT_CREATE_KWARGS = dict(
+    issue_key="victim-service:ChaosModeActive",
     group_key="victim-service:ChaosModeActive",
     alert_names=["ChaosModeActive"],
     primary_name="ChaosModeActive",
@@ -141,7 +142,28 @@ async def test_create_issue_success():
 
 
 @pytest.mark.asyncio
-async def test_create_issue_dedup_returns_existing():
+async def test_create_issue_dedup_same_primary_different_group():
+    """
+    Один и тот же primary alert (issue_key) но разный состав группы (group_key)
+    не должен создавать второй Issue — dedup по issue_key.
+    """
+    _open_issues["victim-service:ChaosModeActive"] = 55
+
+    kwargs_different_group = {**DEFAULT_CREATE_KWARGS, "group_key": "victim-service:ChaosModeActive:CriticalErrorRate:HighErrorRate"}
+
+    with patch("github_issues.GITHUB_TOKEN", "ghp_test"), \
+         patch("github_issues.GITHUB_REPO", "owner/repo"), \
+         patch("httpx.AsyncClient") as mock_client_cls:
+
+        mock_client = AsyncMock()
+        mock_client_cls.return_value = mock_client
+
+        result = await create_issue(**kwargs_different_group)
+
+    mock_client.post.assert_not_called()
+    assert result == 55
+
+
     _open_issues["victim-service:ChaosModeActive"] = 99
 
     with patch("github_issues.GITHUB_TOKEN", "ghp_test"), \

@@ -1,8 +1,9 @@
 """
 github_issues.py — автоматическое создание и закрытие GitHub Issues при инцидентах.
 
-Один Issue на инцидент (group_key). Dedup: если открытый Issue уже существует
-для group_key — новый не создаётся. При resolved — закрывается с комментарием.
+Один Issue на инцидент. Dedup по issue_key = "service:primary_name" — стабильный
+идентификатор инцидента, не зависящий от состава группы алертов в конкретный момент.
+group_key используется только для логов. При resolved — Issue закрывается с комментарием.
 """
 
 import logging
@@ -16,7 +17,8 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")  # формат: "owner/repo"
 GITHUB_API_URL = "https://api.github.com"
 
-# group_key → issue_number (в памяти, сбрасывается при рестарте пода)
+# issue_key ("service:primary_name") → issue_number
+# Стабильный ключ: не меняется при изменении состава группы алертов.
 _open_issues: dict[str, int] = {}
 
 
@@ -33,6 +35,7 @@ def _is_configured() -> bool:
 
 
 async def create_issue(
+    issue_key: str,
     group_key: str,
     alert_names: list[str],
     primary_name: str,
@@ -45,15 +48,21 @@ async def create_issue(
     """
     Создаёт GitHub Issue для инцидента.
     Возвращает номер Issue или None при ошибке / не сконфигурировано.
-    Если Issue для group_key уже открыт — возвращает его номер без создания нового.
+
+    issue_key = "service:primary_name" — стабильный dedup-ключ.
+    group_key = "service:alert1:alert2:..." — меняется при изменении состава группы,
+    используется только для логов.
     """
     if not _is_configured():
         logger.warning("GitHub Issues not configured (GITHUB_TOKEN or GITHUB_REPO missing)")
         return None
 
-    if group_key in _open_issues:
-        logger.info("Issue already open for group %s: #%d", group_key, _open_issues[group_key])
-        return _open_issues[group_key]
+    if issue_key in _open_issues:
+        logger.info(
+            "Issue already open for %s (group %s): #%d",
+            issue_key, group_key, _open_issues[issue_key],
+        )
+        return _open_issues[issue_key]
 
     title = _build_title(primary_name, alert_names, service)
     body = _build_body(alert_names, primary_name, service, severity, analysis, metrics, timestamp)
@@ -69,8 +78,11 @@ async def create_issue(
             )
             if resp.status_code == 201:
                 issue_number = resp.json()["number"]
-                _open_issues[group_key] = issue_number
-                logger.info("Created GitHub Issue #%d for group %s", issue_number, group_key)
+                _open_issues[issue_key] = issue_number
+                logger.info(
+                    "Created GitHub Issue #%d for %s (group %s)",
+                    issue_number, issue_key, group_key,
+                )
                 return issue_number
             else:
                 logger.error(
@@ -84,20 +96,20 @@ async def create_issue(
 
 
 async def close_issue(
-    group_key: str,
+    issue_key: str,
     resolved_at: str,
     remediation_result: dict | None = None,
 ) -> bool:
     """
-    Закрывает GitHub Issue для group_key с комментарием о резолюции.
+    Закрывает GitHub Issue для issue_key с комментарием о резолюции.
     Возвращает True если успешно закрыт.
     """
     if not _is_configured():
         return False
 
-    issue_number = _open_issues.get(group_key)
+    issue_number = _open_issues.get(issue_key)
     if issue_number is None:
-        logger.info("No open Issue found for group %s, skipping close", group_key)
+        logger.info("No open Issue found for %s, skipping close", issue_key)
         return False
 
     comment = _build_resolution_comment(resolved_at, remediation_result)
@@ -123,8 +135,8 @@ async def close_issue(
                 timeout=10,
             )
             if close_resp.status_code == 200:
-                logger.info("Closed GitHub Issue #%d for group %s", issue_number, group_key)
-                _open_issues.pop(group_key, None)
+                logger.info("Closed GitHub Issue #%d for %s", issue_number, issue_key)
+                _open_issues.pop(issue_key, None)
                 return True
             else:
                 logger.error(
