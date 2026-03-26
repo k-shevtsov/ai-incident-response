@@ -14,6 +14,7 @@ from prometheus_client import Counter, Histogram, make_asgi_app
 import time
 import json
 from remediation import should_remediate, remediate, ALERT_REMEDIATION_MAP
+from github_issues import create_issue, close_issue
 
 class _JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -28,7 +29,6 @@ _handler = logging.StreamHandler()
 _handler.setFormatter(_JsonFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[_handler])
 
-# Apply JSON formatter to uvicorn loggers
 for _uvicorn_logger in ("uvicorn", "uvicorn.access", "uvicorn.error"):
     _uv = logging.getLogger(_uvicorn_logger)
     _uv.handlers = [_handler]
@@ -61,13 +61,17 @@ remediations_total = Counter(
     "Total number of remediation actions taken",
     ["action", "status"],
 )
+github_issues_total = Counter(
+    "ai_engine_github_issues_total",
+    "Total number of GitHub Issues created/closed",
+    ["operation", "status"],
+)
 claude_request_duration_seconds = Histogram(
     "ai_engine_claude_request_duration_seconds",
     "Duration of successful Claude API requests",
     buckets=[0.5, 1, 2, 5, 10, 30],
 )
 
-# Mount /metrics endpoint
 metrics_app = make_asgi_app()
 app.mount("/metrics", metrics_app)
 
@@ -86,7 +90,7 @@ DEDUP_WINDOW_MINUTES = 30
 MAX_LOG_LINES = 30
 MAX_LOG_CHARS = 3000
 
-CLAUDE_RETRY_DELAYS = [1, 2, 4]  # seconds between attempts
+CLAUDE_RETRY_DELAYS = [1, 2, 4]
 
 ALERT_PRIORITY = {
     "ChaosModeActive": 1,
@@ -129,18 +133,11 @@ def should_analyze(group_key: str) -> bool:
 
 
 def pick_primary_alert(alerts: list[Alert]) -> Alert | None:
-    """
-    Select the highest‑priority *firing* alert.
-    If no firing alerts exist, return None (ignore resolved-only groups).
-    """
     if not alerts:
         return None
-
     firing = [a for a in alerts if a.status == "firing"]
-
     if not firing:
         return None
-
     firing.sort(key=lambda a: ALERT_PRIORITY.get(a.labels.alertname, 999))
     return firing[0]
 
@@ -153,6 +150,7 @@ def format_message(
     metrics: dict,
     analysis: str,
     timestamp: str,
+    issue_number: int | None = None,
 ) -> str:
     alerts_header = primary_name
     if len(alert_names) > 1:
@@ -164,10 +162,15 @@ def format_message(
     p95 = metrics.get("p95_latency")
     chaos = metrics.get("chaos_mode")
 
+    issue_line = ""
+    if issue_number:
+        issue_line = f"📋 Issue: <a href=\"https://github.com/{os.getenv('GITHUB_REPO', '')}/issues/{issue_number}\"># {issue_number}</a>\n"
+
     return (
         f"🚨 <b>AI Incident Analysis</b>\n"
         f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
-        f"🕐 Time: {timestamp}\n\n"
+        f"🕐 Time: {timestamp}\n"
+        f"{issue_line}\n"
         f"📊 <b>Metrics:</b>\n"
         f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
         f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
@@ -183,8 +186,8 @@ def format_fallback_message(
     primary_name: str,
     metrics: dict,
     timestamp: str,
+    issue_number: int | None = None,
 ) -> str:
-    """Fallback message when Claude is unavailable — raw metrics only."""
     alerts_header = primary_name
     if len(alert_names) > 1:
         others = [n for n in alert_names if n != primary_name]
@@ -195,10 +198,15 @@ def format_fallback_message(
     p95 = metrics.get("p95_latency")
     chaos = metrics.get("chaos_mode")
 
+    issue_line = ""
+    if issue_number:
+        issue_line = f"📋 Issue: <a href=\"https://github.com/{os.getenv('GITHUB_REPO', '')}/issues/{issue_number}\"># {issue_number}</a>\n"
+
     return (
         f"⚠️ <b>Incident Alert</b>\n"
         f"🔔 Alert: <code>{html.escape(alerts_header)}</code>\n"
-        f"🕐 Time: {timestamp}\n\n"
+        f"🕐 Time: {timestamp}\n"
+        f"{issue_line}\n"
         f"📊 <b>Metrics:</b>\n"
         f"- Error rate: {f'{error_rate:.1f}%' if error_rate is not None else 'N/A'}\n"
         f"- Request rate: {f'{request_rate:.3f} req/s' if request_rate is not None else 'N/A'}\n"
@@ -209,7 +217,7 @@ def format_fallback_message(
     )
 
 
-# --- Data collection with retry ---
+# --- Data collection ---
 
 async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict, retries: int = 3) -> dict | None:
     for attempt in range(retries):
@@ -268,11 +276,6 @@ async def get_logs(namespace: str = "app") -> str:
 
 
 async def analyze_with_claude(alert_names: list[str], metrics: dict, logs: str) -> str | None:
-    """
-    Call Claude API with exponential backoff retry.
-    Returns analysis text on success, None if all attempts fail.
-    Delays: 1s, 2s, 4s between attempts (3 total).
-    """
     now = datetime.now(timezone.utc)
     while _claude_call_times and now - _claude_call_times[0] > timedelta(hours=1):
         _claude_call_times.popleft()
@@ -363,11 +366,25 @@ async def handle_webhook(request: Request):
         log.error(f"Unexpected error parsing webhook: {e}")
         return {"status": "error", "detail": str(e)}
 
+    alerts_received_total.inc()
+
     firing = [a for a in payload.alerts if a.status == "firing"]
+    resolved = [a for a in payload.alerts if a.status == "resolved"]
+
+    # --- Handle resolved alerts: close open Issues ---
+    if resolved and not firing:
+        resolved_names = sorted({a.labels.alertname for a in resolved})
+        service = resolved[0].labels.service
+        group_key = f"{service}:{':'.join(resolved_names)}"
+        resolved_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        closed = await close_issue(group_key, resolved_at)
+        if closed:
+            github_issues_total.labels(operation="close", status="success").inc()
+            log.info("Closed GitHub Issue for resolved group: %s", group_key)
+        return {"status": "ok", "skipped": "resolved alerts processed"}
+
     if not firing:
         return {"status": "ok", "skipped": "no firing alerts"}
-
-    alerts_received_total.inc()
 
     service = firing[0].labels.service
     alert_names = sorted({a.labels.alertname for a in firing})
@@ -386,6 +403,7 @@ async def handle_webhook(request: Request):
     if not primary:
         return {"status": "ok", "skipped": "no alerts to process"}
     primary_name = primary.labels.alertname
+    severity = primary.labels.severity
 
     metrics = await get_metrics()
     logs = await get_logs()
@@ -395,27 +413,48 @@ async def handle_webhook(request: Request):
 
     if analysis is not None:
         alerts_analyzed_total.inc()
-        message = format_message(alert_names, primary_name, metrics, analysis, timestamp)
+
+    # --- Create GitHub Issue ---
+    issue_number = await create_issue(
+        group_key=group_key,
+        alert_names=alert_names,
+        primary_name=primary_name,
+        service=service,
+        severity=severity,
+        analysis=analysis,
+        metrics=metrics,
+        timestamp=timestamp,
+    )
+    if issue_number:
+        github_issues_total.labels(operation="create", status="success").inc()
+        log.info("GitHub Issue #%d created for group %s", issue_number, group_key)
     else:
-        message = format_fallback_message(alert_names, primary_name, metrics, timestamp)
+        github_issues_total.labels(operation="create", status="failed").inc()
+
+    # --- Format and send Telegram ---
+    if analysis is not None:
+        message = format_message(alert_names, primary_name, metrics, analysis, timestamp, issue_number)
+    else:
+        message = format_fallback_message(alert_names, primary_name, metrics, timestamp, issue_number)
 
     await send_telegram(message)
     log.info(f"Message sent for group: {group_key}, ai_used={analysis is not None}")
 
     # --- Remediation ---
+    remediation_result = None
     if primary_name in ALERT_REMEDIATION_MAP and should_remediate(primary_name):
-        result = remediate(primary_name)
-        remediations_total.labels(action=result["action"], status=result["status"]).inc()
-        log.info(f"Remediation result: {result}")
-        if result["status"] == "success":
+        remediation_result = remediate(primary_name)
+        remediations_total.labels(action=remediation_result["action"], status=remediation_result["status"]).inc()
+        log.info(f"Remediation result: {remediation_result}")
+        if remediation_result["status"] == "success":
             await send_telegram(
                 f"🔧 <b>Auto-remediation</b>\n"
                 f"Action: rollout restart\n"
-                f"Target: <code>{html.escape(result['detail'])}</code>\n"
+                f"Target: <code>{html.escape(remediation_result['detail'])}</code>\n"
                 f"Triggered by: {html.escape(primary_name)}"
             )
 
-    return {"status": "ok", "analyzed": group_key}
+    return {"status": "ok", "analyzed": group_key, "github_issue": issue_number}
 
 
 @app.get("/health")

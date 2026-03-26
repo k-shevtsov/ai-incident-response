@@ -40,6 +40,13 @@ spec:
                 secretKeyRef:
                   name: ai-engine-secrets
                   key: anthropic-api-key
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-engine-secrets
+                  key: github-token
+            - name: GITHUB_REPO
+              value: "k-shevtsov/ai-incident-response"
             - name: REMEDIATION_ENABLED
               value: "false"
             - name: MAX_CLAUDE_CALLS_PER_HOUR
